@@ -1,0 +1,53 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: #f8faf5;
+  color: #1a2e1a;
+  overflow-x: hidden;
+}
+
+/* Organic blob background */
+.blob-bg {
+  background: radial-gradient(ellipse 80% 60% at 20% 10%, rgba(20,184,166,0.12) 0%, transparent 60%),
+              radial-gradient(ellipse 60% 80% at 80% 80%, rgba(125,162,92,0.10) 0%, transparent 60%),
+              radial-gradient(ellipse 50% 50% at 50% 50%, rgba(250,247,237,0.8) 0%, #f8faf5 100%);
+}
+
+/* Glass card */
+.glass {
+  background: rgba(255,255,255,0.72);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255,255,255,0.6);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #f0fdfa; }
+::-webkit-scrollbar-thumb { background: #99f6e4; border-radius: 8px; }
+
+/* Smooth transitions everywhere */
+a, button { transition: all 0.2s ease; }
+
+/* Focus ring */
+*:focus-visible {
+  outline: 2px solid #14b8a6;
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* FIX: animate-breathe was used in Landing.jsx but never defined.
+   Slow scale + opacity pulse — used for the decorative background blobs. */
+@keyframes breathe {
+  0%, 100% { transform: scale(1);    opacity: 0.7; }
+  50%       { transform: scale(1.12); opacity: 1;   }
+}
+
+.animate-breathe {
+  animation: breathe 7s ease-in-out infinite;
+}
