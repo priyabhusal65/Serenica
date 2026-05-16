@@ -8,7 +8,14 @@ Groq model: llama-3.3-70b-versatile
 FIX: text_predict now correctly loads the full sklearn Pipeline saved by
      merge_and_retrain.py and calls predict_proba directly on raw text —
      no manual vectorizer.transform() or .toarray() needed.
+
+FIX 2: load_dotenv() added at top so GROQ_API_KEY is always loaded
+        from .env file automatically (works with Streamlit, FastAPI, scripts).
 """
+
+# ── Load .env FIRST before anything else ─────────────────────────────────────
+from dotenv import load_dotenv
+load_dotenv()   # reads fyp_final/.env and sets all variables as environment vars
 
 import os
 import json
@@ -26,12 +33,16 @@ MODELS_DIR    = os.path.join(BASE_DIR, "models")
 MODEL_PATH    = os.path.join(MODELS_DIR, "risk_model.pkl")
 ENCODERS_PATH = os.path.join(MODELS_DIR, "label_encoders.pkl")
 TEXT_MODEL_PATH   = os.path.join(MODELS_DIR, "text_model.pkl")
-# TEXT_ENCODER_PATH is no longer needed — vectorizer is inside the pipeline
-# but kept for backward compatibility if anything else references it
 TEXT_ENCODER_PATH = os.path.join(MODELS_DIR, "text_vectorizer.pkl")
 
-GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "your_groq_api_key_here")
-groq_client  = Groq(api_key=GROQ_API_KEY)
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
+if not GROQ_API_KEY:
+    raise EnvironmentError(
+        "[ERROR] GROQ_API_KEY is not set. "
+        "Make sure your .env file exists in the project root (fyp_final/) "
+        "and contains: GROQ_API_KEY=your_key_here"
+    )
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
@@ -80,21 +91,27 @@ def load_tabular_model():
     return model, encoders
 
 
-def encode_input(raw_input, encoders):
+def encode_input(raw_input: dict, encoders: dict) -> dict:
     encoded = {}
     for col, val in raw_input.items():
         if col in CAT_COLS:
             le = encoders[col]
             encoded[col] = le.transform([val])[0] if val in le.classes_ else 0
         else:
-            encoded[col] = val
+            try:
+                encoded[col] = float(val)
+            except (TypeError, ValueError):
+                encoded[col] = 0
     return encoded
 
 
-def tabular_predict(student_data):
+def tabular_predict(student_data: dict):
     model, encoders = load_tabular_model()
     encoded = encode_input(student_data, encoders)
-    X = pd.DataFrame([[encoded.get(c, 0) for c in FEATURE_COLS]], columns=FEATURE_COLS)
+    X = pd.DataFrame(
+        [[encoded.get(c, 0) for c in FEATURE_COLS]],
+        columns=FEATURE_COLS
+    )
 
     pred_encoded = model.predict(X)[0]
     pred_proba   = model.predict_proba(X)[0]
@@ -126,30 +143,26 @@ def text_predict(free_text: str) -> dict:
     So we just load the pipeline and call predict_proba([text]) directly.
     No manual vectorisation or .toarray() conversion needed.
     """
-    # Guard: no text or model file missing
     if not free_text or not free_text.strip():
         return {}
 
     if not os.path.exists(TEXT_MODEL_PATH):
-        print(f"[WARN] Text model not found at {TEXT_MODEL_PATH}. "
-              "Run merge_and_retrain.py first.")
+        print(
+            f"[WARN] Text model not found at {TEXT_MODEL_PATH}. "
+            "Run merge_and_retrain.py first."
+        )
         return {}
 
     try:
-        # Load the full sklearn Pipeline (TF-IDF + LR)
         text_pipeline = joblib.load(TEXT_MODEL_PATH)
+        proba         = text_pipeline.predict_proba([free_text.strip()])[0]
+        classes       = text_pipeline.classes_
 
-        # predict_proba expects a list/iterable of strings
-        proba   = text_pipeline.predict_proba([free_text.strip()])[0]
-        classes = text_pipeline.classes_
-
-        # Normalise class names to match the rest of the app
-        # merge_and_retrain.py uses "Low Risk", "Medium Risk", "High Risk" as labels
         label_map = {
             "Low Risk":    "Low Risk",
             "Medium Risk": "Medium Risk",
             "High Risk":   "High Risk",
-            # Legacy fallbacks in case an older model used numeric / short labels
+            # Legacy fallbacks
             "0":           "Low Risk",
             "1":           "Medium Risk",
             "2":           "High Risk",
@@ -163,11 +176,9 @@ def text_predict(free_text: str) -> dict:
         result = {}
         for cls, prob in zip(classes, proba):
             display_label = label_map.get(str(cls), str(cls))
+            pct = round(float(prob) * 100, 1)
             # If two raw classes map to the same display label, keep the higher prob
-            if display_label in result:
-                result[display_label] = max(result[display_label], round(float(prob) * 100, 1))
-            else:
-                result[display_label] = round(float(prob) * 100, 1)
+            result[display_label] = max(result.get(display_label, 0.0), pct)
 
         return result
 
@@ -179,7 +190,7 @@ def text_predict(free_text: str) -> dict:
 
 # ── Explanation ───────────────────────────────────────────────────────────────
 
-def build_explanation(student_data, top_features, final_risk):
+def build_explanation(student_data: dict, top_features: dict, final_risk: str) -> str:
     friendly_names = {
         "Stress_Level":                "stress level",
         "Depression_Score":            "depression score",
@@ -202,11 +213,12 @@ def build_explanation(student_data, top_features, final_risk):
         "Residence_Type":              "living situation",
         "Relationship_Status":         "relationship status",
     }
-    lines = []
-    for feat, importance in top_features.items():
-        val  = student_data.get(feat, "N/A")
-        name = friendly_names.get(feat, feat)
-        lines.append(f"• {name.capitalize()}: {val} (importance: {importance:.1%})")
+
+    lines = [
+        f"• {friendly_names.get(feat, feat).capitalize()}: "
+        f"{student_data.get(feat, 'N/A')} (importance: {importance:.1%})"
+        for feat, importance in top_features.items()
+    ]
 
     return (
         f"The model predicted **{final_risk}** primarily based on these factors:\n"
@@ -216,7 +228,12 @@ def build_explanation(student_data, top_features, final_risk):
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
 
-def _build_groq_prompt(student_data, free_text, final_risk, explanation):
+def _build_groq_prompt(
+    student_data: dict,
+    free_text: str,
+    final_risk: str,
+    explanation: str
+) -> str:
     risk_instruction = {
         "High Risk": (
             "The student is at HIGH RISK. Your tone must be warm, urgent, and caring. "
@@ -269,7 +286,7 @@ STUDENT PROFILE:
 {student_summary}
 
 STUDENT'S OWN WORDS:
-"{free_text if free_text.strip() else 'No message provided.'}"
+"{free_text.strip() if free_text.strip() else 'No message provided.'}"
 
 AI RISK ASSESSMENT: {final_risk}
 
@@ -293,7 +310,7 @@ RESPONSE FORMAT — respond with ONLY a valid JSON object, no markdown, no extra
 RULES:
 - Be non-judgmental, warm, and specific
 - Never use clinical jargon or echo raw score numbers back to the student
-- Tailor every suggestion to this student course, living situation, and lifestyle
+- Tailor every suggestion to this student's course, living situation, and lifestyle
 - crisis_resources must be the boolean false for Medium and Low risk
 - crisis_resources must be the boolean true for High Risk
 - Output ONLY the JSON object, nothing before or after it
@@ -306,23 +323,22 @@ def _safe_parse_groq(raw: str) -> dict:
     Handles: markdown fences, outer wrapper keys, bad booleans, non-dict returns.
     """
     raw = raw.strip()
-
-    # Strip markdown fences if present
     raw = raw.replace("```json", "").replace("```", "").strip()
 
-    # Extract only the JSON object (first { to last })
+    # Extract only the JSON object (first { ... last })
     start = raw.find("{")
     end   = raw.rfind("}")
     if start != -1 and end != -1 and end > start:
-        raw = raw[start:end + 1]
+        raw = raw[start : end + 1]
 
     parsed = json.loads(raw)
 
-    # Must be a dict
     if not isinstance(parsed, dict):
-        raise ValueError(f"Expected dict from Groq, got {type(parsed).__name__}: {parsed}")
+        raise ValueError(
+            f"Expected dict from Groq, got {type(parsed).__name__}: {parsed}"
+        )
 
-    # If Groq wrapped response in a single outer key, unwrap it
+    # Unwrap single outer key if Groq wrapped the response
     if len(parsed) == 1:
         inner = next(iter(parsed.values()))
         if isinstance(inner, dict) and "summary" in inner:
@@ -330,12 +346,10 @@ def _safe_parse_groq(raw: str) -> dict:
 
     # Normalise crisis_resources to a real Python bool
     cr = parsed.get("crisis_resources", False)
-    if isinstance(cr, str):
-        parsed["crisis_resources"] = cr.strip().lower() == "true"
-    else:
-        parsed["crisis_resources"] = bool(cr)
+    parsed["crisis_resources"] = (
+        cr.strip().lower() == "true" if isinstance(cr, str) else bool(cr)
+    )
 
-    # Return a clean dict with guaranteed keys
     return {
         "summary":          str(parsed.get("summary", "")),
         "suggestions":      list(parsed.get("suggestions", [])),
@@ -344,7 +358,12 @@ def _safe_parse_groq(raw: str) -> dict:
     }
 
 
-def call_groq(student_data, free_text, final_risk, explanation):
+def call_groq(
+    student_data: dict,
+    free_text: str,
+    final_risk: str,
+    explanation: str
+) -> dict:
     """Calls Groq LLaMA and returns a guaranteed dict with all required keys."""
     prompt = _build_groq_prompt(student_data, free_text, final_risk, explanation)
 
@@ -357,10 +376,11 @@ def call_groq(student_data, free_text, final_risk, explanation):
                     "You are a compassionate university mental health support assistant. "
                     "You provide personalised, practical, and empathetic guidance to students. "
                     "You never diagnose. You always encourage professional help when needed. "
-                    "You respond ONLY with a valid JSON object — no markdown fences, no preamble, no explanation."
-                )
+                    "You respond ONLY with a valid JSON object — "
+                    "no markdown fences, no preamble, no explanation."
+                ),
             },
-            {"role": "user", "content": prompt}
+            {"role": "user", "content": prompt},
         ],
         temperature=0.65,
         max_tokens=1024,
@@ -368,7 +388,6 @@ def call_groq(student_data, free_text, final_risk, explanation):
 
     raw = chat.choices[0].message.content.strip()
     print(f"[DEBUG] Groq raw response:\n{raw}\n")
-
     return _safe_parse_groq(raw)
 
 
@@ -376,8 +395,12 @@ def call_groq(student_data, free_text, final_risk, explanation):
 
 def assess_student(student_data: dict, free_text: str = "") -> dict:
     """
-    Main function called by the Streamlit app.
-    Returns the full assessment result dict.
+    Main entry point called by the FastAPI backend and Streamlit app.
+
+    Returns a fully populated assessment dict with keys:
+        final_risk, tabular_confidence, text_confidence,
+        model_explanation, top_features,
+        summary, suggestions, crisis_resources, rag_response
     """
     # 1. Tabular model (Random Forest)
     final_risk, tab_confidence, top_features, _ = tabular_predict(student_data)
@@ -385,23 +408,22 @@ def assess_student(student_data: dict, free_text: str = "") -> dict:
     # 2. Text model (sklearn Pipeline: TF-IDF + Logistic Regression)
     text_confidence = text_predict(free_text)
 
-    # 3. Human-readable explanation
+    # 3. Human-readable model explanation
     explanation = build_explanation(student_data, top_features, final_risk)
 
-    # 4. Groq LLaMA response
+    # 4. Groq LLaMA response (with fallback on any failure)
     try:
         groq_result = call_groq(student_data, free_text, final_risk, explanation)
     except Exception as e:
         print(f"[ERROR] Groq call failed: {type(e).__name__}: {e}")
         traceback.print_exc()
-        fallback = dict(FALLBACK_RESULT)
-        fallback["crisis_resources"] = (final_risk == "High Risk")
+        groq_result = dict(FALLBACK_RESULT)
+        groq_result["crisis_resources"] = (final_risk == "High Risk")
         if final_risk == "High Risk":
-            fallback["rag_response"] = (
+            groq_result["rag_response"] = (
                 "Please reach out to a mental health professional for support.\n\n"
                 + CRISIS_RESOURCES_TEXT
             )
-        groq_result = fallback
 
     return {
         "final_risk":         final_risk,
