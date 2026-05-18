@@ -15,6 +15,7 @@ from routes.auth_routes import router as auth_router
 from routes.student_routes import router as student_router
 from routes.assessment_routes import router as assessment_router
 from routes.admin_routes import router as admin_router
+from routes.account_routes import router as account_router   # ← ADD THIS
 
 
 @asynccontextmanager
@@ -50,6 +51,7 @@ app.include_router(auth_router)
 app.include_router(student_router)
 app.include_router(assessment_router)
 app.include_router(admin_router)
+app.include_router(account_router)         # ← ADD THIS
 
 
 @app.get("/", tags=["Health"])

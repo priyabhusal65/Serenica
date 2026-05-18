@@ -208,3 +208,15 @@ class AverageScorePoint(BaseModel):
     avg_stress: float
     avg_anxiety: float
     avg_depression: float
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+class AddAdminRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+class MessageResponse(BaseModel):
+    message: str
